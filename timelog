@@ -1,0 +1,156 @@
+#!/bin/bash
+
+LOG_DIR="$HOME/.timelog"  # Directory to store logs
+CONFIG_FILE="$HOME/.timelogrc"  # Config file location
+EXPORT_DIR="$HOME"  # Where exported CSV files will be saved
+mkdir -p "$LOG_DIR"  # Ensure the directory exists
+
+# Load Config File
+load_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        source "$CONFIG_FILE"
+    else
+        echo "Warning: Config file not found. Using default values."
+    fi
+
+    # Default hourly salary if not set in config
+    HOURLY_SALARY=${HOURLY_SALARY:-0}
+}
+
+log_hours() {
+    load_config  # Load configuration
+
+    local date_today=$(date +"%Y-%m-%d")  # Default to today
+    local worked_hours
+    local description=""
+
+    if [[ -n "$2" ]]; then
+        date_today="$1"
+        worked_hours="$2"
+        description="${@:3}"  # Capture everything after the second argument as description
+    else
+        worked_hours="$1"
+        description="${@:2}"  # Capture optional description
+    fi
+
+    # Validate date format (YYYY-MM-DD)
+    if ! [[ "$date_today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        echo "Error: Invalid date format. Use YYYY-MM-DD."
+        exit 1
+    fi
+
+    # Validate hours input
+    if ! [[ "$worked_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+        echo "Error: Hours must be a number (e.g., 7.5 for 7h 30m)."
+        exit 1
+    fi
+
+    local month_file="$LOG_DIR/$(echo "$date_today" | cut -c1-7).txt"  # Extract YYYY-MM
+
+    echo "$date_today $worked_hours $description" >> "$month_file"
+    echo "Logged: $date_today - $worked_hours hours - $description"
+}
+
+summarize_month() {
+    load_config  # Load salary setting
+
+    local month="$1"
+    local month_file="$LOG_DIR/$month.txt"
+
+    if [ ! -f "$month_file" ]; then
+        echo "No log entries for $month."
+        return
+    fi
+
+    awk -v salary="$HOURLY_SALARY" '
+    {
+        total_hours += $2
+    }
+    END {
+        total_minutes = total_hours * 60
+        hours = int(total_minutes / 60)
+        minutes = total_minutes % 60
+        total_salary = total_hours * salary
+
+        printf "Total time logged for %s: %d hours and %d minutes\n", "'$month'", hours, minutes
+        printf "Total salary for %s: %.2f\n", "'$month'", total_salary
+    }' "$month_file"
+
+    echo "---------------------"
+    echo "Detailed Log Entries:"
+    cat "$month_file"
+}
+
+export_month() {
+    load_config  # Load salary setting
+
+    local month="$1"
+    local month_file="$LOG_DIR/$month.txt"
+    local export_file="$EXPORT_DIR/timelog-$month.csv"
+
+    if [ ! -f "$month_file" ]; then
+        echo "No log entries for $month."
+        return
+    fi
+
+    # Create CSV header
+    echo "Date,Hours,Description,Earnings" > "$export_file"
+
+    # Read log and append to CSV
+    awk -v salary="$HOURLY_SALARY" '{
+        earnings = $2 * salary
+        print $1 "," $2 "," "\"" substr($0, index($0,$3)) "\"" "," earnings
+    }' "$month_file" >> "$export_file"
+
+    echo "Exported time log for $month to $export_file"
+}
+
+export_all() {
+    load_config  # Load salary setting
+
+    local export_file="$EXPORT_DIR/timelog-all.csv"
+    echo "Date,Hours,Description,Earnings" > "$export_file"
+
+    # Iterate through all log files
+    for file in "$LOG_DIR"/*.txt; do
+        if [ -f "$file" ]; then
+            awk -v salary="$HOURLY_SALARY" '{
+                earnings = $2 * salary
+                print $1 "," $2 "," "\"" substr($0, index($0,$3)) "\"" "," earnings
+            }' "$file" >> "$export_file"
+        fi
+    done
+
+    echo "Exported all time logs to $export_file"
+}
+
+case "$1" in
+    add)
+        if [[ -z "$2" ]]; then
+            echo "Usage: timelog add [YYYY-MM-DD] HOURS [DESCRIPTION]"
+            exit 1
+        fi
+        log_hours "$2" "$3" "${@:4}"  # Pass additional arguments as the description
+        ;;
+    summary)
+        if [[ -z "$2" ]]; then
+            echo "Usage: timelog summary YYYY-MM"
+            exit 1
+        fi
+        summarize_month "$2"
+        ;;
+    export)
+        if [[ "$2" == "all" ]]; then
+            export_all
+        elif [[ -z "$2" ]]; then
+            echo "Usage: timelog export {YYYY-MM | all}"
+            exit 1
+        else
+            export_month "$2"
+        fi
+        ;;
+    *)
+        echo "Usage: timelog {add [YYYY-MM-DD] HOURS [DESCRIPTION] | summary YYYY-MM | export {YYYY-MM | all}}"
+        exit 1
+        ;;
+esac
